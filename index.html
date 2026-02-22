@@ -1559,9 +1559,135 @@ a {
   outline-offset: 2px;
   border-radius: 4px;
 }
+
+/* ---------- 浮动音频控制面板 ---------- */
+.audio-panel {
+  position: fixed;
+  bottom: 150px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 1200;
+}
+
+.audio-panel-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  border: none;
+  font-size: 22px;
+  cursor: pointer;
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.13);
+  transition: transform 0.2s, background 0.2s, box-shadow 0.2s;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.audio-panel-btn:active {
+  transform: scale(0.88);
+}
+
+/* 音乐按钮 */
+.btn-music {
+  background: #FFF3E0;
+  color: #E65100;
+}
+
+.btn-music.active {
+  background: linear-gradient(135deg, #FFB74D, #FF9800);
+  color: #fff;
+}
+
+@keyframes music-note-bounce {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+
+.btn-music.active {
+  animation: music-note-bounce 1s ease-in-out infinite;
+}
+
+/* TTS 按钮 */
+.btn-tts {
+  background: #E3F2FD;
+  color: #1565C0;
+  width: 52px;
+  height: 52px;
+  font-size: 23px;
+}
+
+.btn-tts.active {
+  background: linear-gradient(135deg, #42A5F5, #1E88E5);
+  color: #fff;
+}
+
+@keyframes tts-glow {
+  0%, 100% { box-shadow: 0 3px 14px rgba(30, 136, 229, 0.25); }
+  50% { box-shadow: 0 3px 22px rgba(30, 136, 229, 0.55); }
+}
+
+.btn-tts.active {
+  animation: tts-glow 1.5s ease-in-out infinite;
+}
+
+/* TTS 状态提示条 */
+.tts-status-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #42A5F5, #1E88E5, #42A5F5);
+  background-size: 200% 100%;
+  z-index: 1500;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.tts-status-bar.active {
+  opacity: 1;
+  animation: tts-bar-move 2s linear infinite;
+}
+
+@keyframes tts-bar-move {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 200% 0%; }
+}
+
+/* 响应式：小屏幕音频面板 */
+@media (max-width: 600px) {
+  .audio-panel {
+    bottom: 140px;
+    right: 12px;
+  }
+  .audio-panel-btn {
+    width: 46px;
+    height: 46px;
+    font-size: 20px;
+  }
+  .btn-tts {
+    width: 48px;
+    height: 48px;
+    font-size: 21px;
+  }
+}
   </style>
 </head>
 <body>
+
+<!-- 浮动音频控制面板 -->
+<div class="audio-panel">
+  <button class="audio-panel-btn btn-music" id="btn-music" title="背景音乐">🎵</button>
+  <button class="audio-panel-btn btn-tts" id="btn-tts" title="读给我听">🔊</button>
+</div>
+<div class="tts-status-bar" id="tts-status-bar"></div>
+<audio id="bg-music" loop preload="auto">
+  <source src="bgm.mp3" type="audio/mpeg">
+</audio>
 
 <!-- 汉堡菜单按钮 -->
 <button class="hamburger-btn" aria-label="打开导航菜单">
@@ -8122,6 +8248,9 @@ a {
     // 更新打卡按钮状态
     updateCheckinButtons();
 
+    // 切换页面时停止朗读
+    ttsStop();
+
     // 滚动到顶部
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
@@ -8496,7 +8625,205 @@ a {
   }
 
   /* ============================================================
-     十二、URL hash 路由
+     十二、背景音乐
+     ============================================================ */
+
+  var musicPlaying = false;
+
+  function initMusic() {
+    var btn = document.getElementById('btn-music');
+    var audio = document.getElementById('bg-music');
+    if (!btn || !audio) return;
+
+    audio.volume = 0.2;
+
+    btn.addEventListener('click', function () {
+      if (musicPlaying) {
+        audio.pause();
+        btn.classList.remove('active');
+        musicPlaying = false;
+      } else {
+        audio.play().then(function () {
+          btn.classList.add('active');
+          musicPlaying = true;
+        }).catch(function () {
+          showToast('背景音乐加载中，请稍后再试');
+        });
+      }
+    });
+  }
+
+  /* ============================================================
+     十三、语音朗读 (TTS)
+     ============================================================ */
+
+  var ttsChunks = [];
+  var ttsCurrentIdx = 0;
+  var ttsSpeaking = false;
+  var ttsVoice = null;
+
+  function initTTS() {
+    if (!window.speechSynthesis) return;
+
+    // 预加载语音列表
+    function loadVoices() {
+      var voices = window.speechSynthesis.getVoices();
+      for (var i = 0; i < voices.length; i++) {
+        if (voices[i].lang.indexOf('zh') !== -1) {
+          ttsVoice = voices[i];
+          break;
+        }
+      }
+    }
+    loadVoices();
+    if (window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    var btn = document.getElementById('btn-tts');
+    if (!btn) return;
+
+    btn.addEventListener('click', function () {
+      if (ttsSpeaking) {
+        ttsStop();
+      } else {
+        ttsStart();
+      }
+    });
+  }
+
+  /**
+   * 提取当前页面的可读文本（只读"阅读时间"部分）
+   */
+  function ttsGetText() {
+    var activePage = document.querySelector('.day-page.active');
+    if (!activePage) return '';
+
+    var readingSection = activePage.querySelector('.reading-section');
+    if (!readingSection) {
+      // 如果没有 reading-section，尝试读 day-content
+      readingSection = activePage.querySelector('.day-content');
+    }
+    if (!readingSection) return '';
+
+    var clone = readingSection.cloneNode(true);
+    // 移除不需要朗读的元素
+    var removeEls = clone.querySelectorAll('.quiz-item, .quiz-option, .quiz-answer, .checkin-section, .exercise-section, .page-nav');
+    for (var i = 0; i < removeEls.length; i++) {
+      removeEls[i].remove();
+    }
+
+    return clone.textContent.replace(/\s+/g, ' ').trim();
+  }
+
+  /**
+   * 将长文本分割为短句（解决iOS Safari朗读中断问题）
+   */
+  function ttsSplitText(text) {
+    // 按句号、问号、叹号分割，保留标点
+    var parts = text.match(/[^。！？\!\?]+[。！？\!\?]?/g) || [text];
+    var chunks = [];
+    var current = '';
+
+    for (var i = 0; i < parts.length; i++) {
+      var s = parts[i].trim();
+      if (!s) continue;
+
+      if (current.length + s.length > 120) {
+        if (current) chunks.push(current);
+        current = s;
+      } else {
+        current += s;
+      }
+    }
+    if (current) chunks.push(current);
+    return chunks;
+  }
+
+  function ttsStart() {
+    if (!window.speechSynthesis) {
+      showToast('你的浏览器不支持语音朗读');
+      return;
+    }
+
+    var text = ttsGetText();
+    if (!text) {
+      showToast('请先打开一天的学习内容');
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    ttsChunks = ttsSplitText(text);
+    ttsCurrentIdx = 0;
+    ttsSpeaking = true;
+    ttsUpdateUI(true);
+    ttsSpeakChunk();
+  }
+
+  function ttsSpeakChunk() {
+    if (ttsCurrentIdx >= ttsChunks.length || !ttsSpeaking) {
+      ttsStop();
+      return;
+    }
+
+    var utterance = new SpeechSynthesisUtterance(ttsChunks[ttsCurrentIdx]);
+    utterance.lang = 'zh-CN';
+    utterance.rate = 0.88;
+    utterance.pitch = 1.05;
+
+    if (ttsVoice) {
+      utterance.voice = ttsVoice;
+    }
+
+    utterance.onend = function () {
+      ttsCurrentIdx++;
+      if (ttsSpeaking) {
+        ttsSpeakChunk();
+      }
+    };
+
+    utterance.onerror = function () {
+      ttsStop();
+    };
+
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function ttsStop() {
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    ttsSpeaking = false;
+    ttsChunks = [];
+    ttsCurrentIdx = 0;
+    ttsUpdateUI(false);
+  }
+
+  function ttsUpdateUI(speaking) {
+    var btn = document.getElementById('btn-tts');
+    var bar = document.getElementById('tts-status-bar');
+    if (btn) {
+      if (speaking) {
+        btn.textContent = '⏹';
+        btn.classList.add('active');
+        btn.title = '停止朗读';
+      } else {
+        btn.textContent = '🔊';
+        btn.classList.remove('active');
+        btn.title = '读给我听';
+      }
+    }
+    if (bar) {
+      if (speaking) {
+        bar.classList.add('active');
+      } else {
+        bar.classList.remove('active');
+      }
+    }
+  }
+
+  /* ============================================================
+     十四、URL hash 路由
      ============================================================ */
 
   function handleHashRoute() {
@@ -8543,6 +8870,12 @@ a {
     // 回到顶部
     initBackToTop();
 
+    // 背景音乐
+    initMusic();
+
+    // 语音朗读
+    initTTS();
+
     // 根据URL hash确定初始页面
     handleHashRoute();
   }
@@ -8567,7 +8900,9 @@ a {
     getCheckinCount: getCheckinCount,
     updateProgress: updateProgress,
     renderCalendar: renderCalendar,
-    showToast: showToast
+    showToast: showToast,
+    ttsStart: ttsStart,
+    ttsStop: ttsStop
   };
 
 })();
